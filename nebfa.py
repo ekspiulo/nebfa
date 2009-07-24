@@ -3,17 +3,82 @@
 # This file is part of the nebfa package released under the MIT license.
 #
 
+import hashlib
+import itertools
+import os
 import re
+import types
 
-# From the Blast book
-IDENT_TYPES = set(
-    "dbj emb gb gi ref pir prf sp pdb pat bbs lcl gnl".split()
-)    
+IDTYPES = set("dbj emb gb gi ref pir prf sp pdb pat bbs lcl gnl sha1".split())
+
+def parse(data, stream=False):
+    if isinstance(data, types.StringTypes):
+        reader = Reader.fromstring(data)
+    else:
+        reader = Reader(iter(data))
+    while True:
+        yield Record(reader, stream=stream)        
+
+def parse_file(path):
+    with open(path) as handle:
+        for rec in parse(handle):
+            yield rec
+
+class Record(object):
+    def __init__(self, handle, stream=False):
+        hdr = handle.nextheader()
+        self.meta = Record.parse_defline(hdr)
+        if not stream:
+            hstr = HashStream(handle)
+            self.sequence = ''.join(hstr)
+            self.hash = hstr.hash()
+        else:
+            self.seqiter = HashStream(handle)
+            self.hash = property(lambda self: self.seq.hash())
+
+    @property
+    def id(self):
+        "Primary identifier for this record."
+        return self.meta["ids"][0]
+    
+    @property
+    def desc(self):
+        "Primery description of this record."
+        return self.meta["desc"][0]
+
+    @staticmethod
+    def parse_defline(data):
+        if data[:1] != ">":
+            raise ValueError("Invalid header has no '>': %s" % header)
+        headers = data[1:].split('\x01')
+        ret = {"ids": [], "desc": []}
+        for h in headers:
+            bits = h.split(None, 1)
+            ident, desc = bits[0], bits[1].strip() or None
+            for sid in Record.parse_id(ident):
+                if sid not in ret["ids"]:
+                    ret["ids"].append(sid)
+            if desc not in ret["desc"]:
+                ret["desc"].append(desc)
+        return ret
+    
+    @staticmethod
+    def parse_id(data):
+        if data.find("|") < 0: return data
+        bits = data.split("|")
+        ret = []
+        while len(bits):
+            idtype = bits.pop(0)
+            curr = []
+            while len(bits) and bits[0] not in IDTYPES:
+                curr.append(bits.pop(0))
+            ret.append((idtype, '|'.join(filter(None, curr))))
+        return ret
 
 class Reader(object):
     def __init__(self, stream):
         self.stream = itertools.ifilter(Reader.skipblank, stream)
-        self.next = None
+        self.header = None
 
     def __iter__(self):
         return self
@@ -34,85 +99,44 @@ class Reader(object):
         return Reader(_iter(strdata))
 
     def nextheader(self):
-        if self.next is not None:
-            ret = self.next
-            self.next = None
+        if self.header is not None:
+            ret, self.header = self.header, None
             return ret
-        line = self.steram.next().lstrip()
+        line = self.stream.next().lstrip()
         if not line[:1] == ">":
             raise ValueError("Invalid definition line: %s" % line)
         return line
 
     def next(self):
-        if self.next:
+        if self.header:
             raise StopIteration
         line = self.stream.next().lstrip()
         if line[:1] == ">":
-            self.next = line
+            self.header = line
             raise StopIteration
         return line
 
-class Record(object):
+class HashStream(object):
     def __init__(self, stream):
-        hdr = stream.nextheader()
-        self.headers = self.parse_defline(hdr)
-        self.id, self.desc = self.headers[0]
-        self.seqiter = stream
-
-    def parse_defline(self, data):
-        if data[:1] != ">":
-            raise ValueError("Invalid header has no '>': %s" % header)
-        data = data[1:].split('\x01')
-        ret = []
-        for h in headers:
-            bits = h.split(None, 1)
-            ident, desc = bits[0], bits[1:] or None
-            ident = self._parse_id(ident)
-            ret.append((ident, desc))
-        return ret
+        self.stream = stream
+        self.sha = hashlib.sha1()
+        self.exhausted = False
     
-    def _parse_id(self, data):
-        bits = data.split("|")
-        if len(bits) == 1:
-            return ident
-        ret = {}
-        while len(bits) > 0:
-            itype = bits[0]
-            parts = []
-            for b in bits[1:]:
-                if b in IDENT_TYPES: break
-                parts.append(b)
-            bits = bits[len(parts)+1:]
-            parts = filter(None, parts)
-            if len(parts) == 1:
-                parts = parts[0]
-            if isinstance(ret.get(itype, None), list):
-                ret[itype].append(parts)
-            elif itype in ret:
-                ret[itype] = [ret[itype], parts]
-            else:
-                ret[itype] = parts
-        return ret
-
-def parse(stream):
-    if isinstance(stream, types.StringTypes):
-        reader = Reader.fromstring(stream)
-    else:
-        reader = Reader(iter(stream))
+    def __iter__(self):
+        return self
     
-    handle = stream.Stream(filename, handle)
-    for line in handle:
-        if line.lstrip()[:1] == ">":
-            descs = parse_description(line.strip())
-            seqiter = parse_sequence(handle)
-            if not stream_seq:
-                seqiter = ''.join(list(seqiter))
-            yield FastaRecord(descs, seqiter)
+    def next(self):
+        if self.exhausted:
+            raise StopIteration
+        try:
+            data = self.stream.next().strip()
+        except StopIteration:
+            self.exhausted = True
+            raise
+        self.sha.update(data)
+        return data
+    
+    def hash(self):
+        return self.sha.hexdigest().upper()
 
 
-def parse_sequence(handle):
-    for line in handle:
-        if line.lstrip()[:1] == ">":
-            handle.undo(line)
-            raise StopIteration()
-        yield line.strip()
