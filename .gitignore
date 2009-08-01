@@ -1,1 +1,3 @@
 *.pyc
+nebfa.egg-info/
+dist/
