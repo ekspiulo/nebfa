@@ -64,7 +64,7 @@ class Record(object):
     
     @staticmethod
     def parse_id(data):
-        if data.find("|") < 0: return data
+        if data.find("|") < 0: return [data]
         bits = data.split("|")
         ret = []
         while len(bits):
