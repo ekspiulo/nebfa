@@ -54,7 +54,9 @@ class Record(object):
         ret = {"ids": [], "desc": []}
         for h in headers:
             bits = h.split(None, 1)
-            ident, desc = bits[0], bits[1].strip() or None
+            ident, desc = bits[0], None
+            if len(bits) > 1:
+                desc = bits[1].strip()
             for sid in Record.parse_id(ident):
                 if sid not in ret["ids"]:
                     ret["ids"].append(sid)
